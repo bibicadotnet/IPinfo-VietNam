@@ -47,7 +47,6 @@ jobs:
               data = json.loads(line)
               if data['country_code'] == 'VN':
                   network = data['network']
-                  # Chỉ lấy IPv4 (không có dấu :)
                   if ':' not in network:
                       vietnam_networks.append(network)
           
@@ -59,36 +58,43 @@ jobs:
           
           print("Đã lưu vietnam.txt")
           
-          # Async check IPs
           city_ips = defaultdict(list)
           total = len(vietnam_networks)
-          checked = 0
+          checked = [0]
+          debug_count = [0]
           
           async def check_ip(session, network, semaphore):
-              global checked
               async with semaphore:
                   ip = network.split('/')[0]
                   try:
-                      async with session.get(f"https://ipinfo.io/{ip}/json?token={TOKEN}") as response:
+                      async with session.get(f"https://ipinfo.io/{ip}/json?token={TOKEN}", timeout=10) as response:
                           data = await response.json()
-                          state = data.get('region', 'Unknown')
                           
-                          if 'Ho Chi Minh' in state or 'HCMC' in state:
-                              state = 'hochiminh'
+                          # Debug 5 IPs đầu
+                          if debug_count[0] < 5:
+                              print(f"Debug {ip}: {data}")
+                              debug_count[0] += 1
+                          
+                          state = data.get('region', '')
+                          
+                          if not state:
+                              city_ips['unknown'].append(network)
+                          elif 'Ho Chi Minh' in state or 'HCMC' in state:
+                              city_ips['hochiminh'].append(network)
                           elif 'Hanoi' in state or 'Ha Noi' in state:
-                              state = 'hanoi'
+                              city_ips['hanoi'].append(network)
                           elif 'Da Nang' in state:
-                              state = 'danang'
+                              city_ips['danang'].append(network)
                           else:
-                              state = state.lower().replace(' ', '').replace('(', '').replace(')', '')
+                              state_clean = state.lower().replace(' ', '').replace('(', '').replace(')', '').replace('province', '')
+                              city_ips[state_clean].append(network)
                           
-                          city_ips[state].append(network)
-                          
-                          checked += 1
-                          if checked % 500 == 0:
-                              print(f"Đã kiểm tra {checked}/{total} networks...")
+                          checked[0] += 1
+                          if checked[0] % 500 == 0:
+                              print(f"Đã kiểm tra {checked[0]}/{total} networks...")
                   except Exception as e:
-                      print(f"Lỗi {ip}: {e}")
+                      if debug_count[0] < 10:
+                          print(f"Lỗi {ip}: {e}")
                       city_ips['unknown'].append(network)
           
           async def main():
@@ -101,7 +107,7 @@ jobs:
           asyncio.run(main())
           
           print("\nĐang tạo file cho từng thành phố...")
-          for city, networks in city_ips.items():
+          for city, networks in sorted(city_ips.items()):
               filename = f"{city}.txt"
               with open(filename, 'w') as f:
                   for network in networks:
