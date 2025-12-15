@@ -36,7 +36,6 @@ jobs:
           
           TOKEN = 'db39199da5388b'
           
-          # Mapping tên tỉnh/thành chuẩn
           PROVINCE_MAP = {
               'ho chi minh city (hcmc)': 'hochiminh',
               'ho chi minh': 'hochiminh',
@@ -47,7 +46,6 @@ jobs:
               'hai phong': 'haiphong',
               'can tho city': 'cantho',
               'can tho': 'cantho',
-              
               'an giang': 'angiang',
               'bac ninh': 'bacninh',
               'bac giang': 'bacgiang',
@@ -109,21 +107,15 @@ jobs:
           }
           
           def normalize_province(region):
-              """Chuẩn hóa tên tỉnh/thành"""
               if not region:
                   return 'unknown'
               
-              # Chuyển thành chữ thường
               region_lower = region.lower().strip()
-              
-              # Xóa "province" nếu có
               region_lower = region_lower.replace(' province', '')
               
-              # Kiểm tra trong map
               if region_lower in PROVINCE_MAP:
                   return PROVINCE_MAP[region_lower]
               
-              # Nếu không có trong map, remove dấu và khoảng trắng
               normalized = unicodedata.normalize('NFKD', region_lower)
               normalized = ''.join([c for c in normalized if not unicodedata.combining(c)])
               normalized = normalized.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
@@ -153,10 +145,9 @@ jobs:
           
           city_ips = defaultdict(list)
           total = len(vietnam_networks)
-          checked = 0
+          checked = [0]
           
           async def check_ip(session, network, semaphore):
-              nonlocal checked
               async with semaphore:
                   ip = network.split('/')[0]
                   try:
@@ -167,9 +158,9 @@ jobs:
                           
                           city_ips[province].append(network)
                           
-                          checked += 1
-                          if checked % 500 == 0:
-                              print(f"Đã kiểm tra {checked}/{total} networks...")
+                          checked[0] += 1
+                          if checked[0] % 500 == 0:
+                              print(f"Đã kiểm tra {checked[0]}/{total} networks...")
                   except Exception as e:
                       city_ips['unknown'].append(network)
           
