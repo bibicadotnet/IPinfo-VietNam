@@ -31,96 +31,9 @@ jobs:
           import json
           import asyncio
           import aiohttp
-          import unicodedata
           from collections import defaultdict
           
           TOKEN = 'db39199da5388b'
-          
-          PROVINCE_MAP = {
-              'ho chi minh city (hcmc)': 'hochiminh',
-              'ho chi minh': 'hochiminh',
-              'hcmc': 'hochiminh',
-              'hanoi': 'hanoi',
-              'ha noi': 'hanoi',
-              'da nang': 'danang',
-              'hai phong': 'haiphong',
-              'can tho city': 'cantho',
-              'can tho': 'cantho',
-              'an giang': 'angiang',
-              'bac ninh': 'bacninh',
-              'bac giang': 'bacgiang',
-              'bac kan': 'backan',
-              'bac lieu': 'baclieu',
-              'ben tre': 'bentre',
-              'binh dinh': 'binhdinh',
-              'binh duong': 'binhduong',
-              'binh phuoc': 'binhphuoc',
-              'binh thuan': 'binhthuan',
-              'ca mau': 'camau',
-              'cao bang': 'caobang',
-              'dak lak': 'daklak',
-              'dak nong': 'daknong',
-              'dien bien': 'dienbien',
-              'dong nai': 'dongnai',
-              'dong thap': 'dongthap',
-              'gia lai': 'gialai',
-              'ha giang': 'hagiang',
-              'ha nam': 'hanam',
-              'ha tinh': 'hatinh',
-              'hai duong': 'haiduong',
-              'hau giang': 'haugiang',
-              'hoa binh': 'hoabinh',
-              'hung yen': 'hungyen',
-              'khanh hoa': 'khanhhoa',
-              'kien giang': 'kiengiang',
-              'kon tum': 'kontum',
-              'lai chau': 'laichau',
-              'lam dong': 'lamdong',
-              'lang son': 'langson',
-              'lao cai': 'laocai',
-              'long an': 'longan',
-              'nam dinh': 'namdinh',
-              'nghe an': 'nghean',
-              'ninh binh': 'ninhbinh',
-              'ninh thuan': 'ninhthuan',
-              'phu tho': 'phutho',
-              'phu yen': 'phuyen',
-              'quang binh': 'quangbinh',
-              'quang nam': 'quangnam',
-              'quang ngai': 'quangngai',
-              'quang ninh': 'quangninh',
-              'quang tri': 'quangtri',
-              'soc trang': 'soctrang',
-              'son la': 'sonla',
-              'tay ninh': 'tayninh',
-              'thai binh': 'thaibinh',
-              'thai nguyen': 'thainguyen',
-              'thanh hoa': 'thanhhoa',
-              'thua thien hue': 'thuathienhue',
-              'thua thien-hue': 'thuathienhue',
-              'tien giang': 'tiengiang',
-              'tra vinh': 'travinh',
-              'tuyen quang': 'tuyenquang',
-              'vinh long': 'vinhlong',
-              'vinh phuc': 'vinhphuc',
-              'yen bai': 'yenbai',
-          }
-          
-          def normalize_province(region):
-              if not region:
-                  return 'unknown'
-              
-              region_lower = region.lower().strip()
-              region_lower = region_lower.replace(' province', '')
-              
-              if region_lower in PROVINCE_MAP:
-                  return PROVINCE_MAP[region_lower]
-              
-              normalized = unicodedata.normalize('NFKD', region_lower)
-              normalized = ''.join([c for c in normalized if not unicodedata.combining(c)])
-              normalized = normalized.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
-              
-              return normalized
           
           print("Đang tải file IPinfo Lite...")
           url = f"https://ipinfo.io/data/ipinfo_lite.json.gz?_src=frontend&token={TOKEN}"
@@ -143,29 +56,40 @@ jobs:
           
           print("Đã lưu vietnam.txt")
           
+          # Async check IPs
           city_ips = defaultdict(list)
           total = len(vietnam_networks)
-          checked = [0]
+          checked = 0
           
           async def check_ip(session, network, semaphore):
+              global checked
               async with semaphore:
                   ip = network.split('/')[0]
                   try:
                       async with session.get(f"https://ipinfo.io/{ip}/json?token={TOKEN}") as response:
                           data = await response.json()
-                          region = data.get('region', 'Unknown')
-                          province = normalize_province(region)
+                          state = data.get('region', 'Unknown')
                           
-                          city_ips[province].append(network)
+                          if 'Ho Chi Minh' in state or 'HCMC' in state:
+                              state = 'hochiminh'
+                          elif 'Hanoi' in state or 'Ha Noi' in state:
+                              state = 'hanoi'
+                          elif 'Da Nang' in state:
+                              state = 'danang'
+                          else:
+                              state = state.lower().replace(' ', '').replace('(', '').replace(')', '')
                           
-                          checked[0] += 1
-                          if checked[0] % 500 == 0:
-                              print(f"Đã kiểm tra {checked[0]}/{total} networks...")
+                          city_ips[state].append(network)
+                          
+                          checked += 1
+                          if checked % 500 == 0:
+                              print(f"Đã kiểm tra {checked}/{total} networks...")
                   except Exception as e:
+                      print(f"Lỗi {ip}: {e}")
                       city_ips['unknown'].append(network)
           
           async def main():
-              semaphore = asyncio.Semaphore(50)
+              semaphore = asyncio.Semaphore(50)  # 50 requests đồng thời
               async with aiohttp.ClientSession() as session:
                   tasks = [check_ip(session, network, semaphore) for network in vietnam_networks]
                   await asyncio.gather(*tasks)
@@ -174,8 +98,8 @@ jobs:
           asyncio.run(main())
           
           print("\nĐang tạo file cho từng thành phố...")
-          for province, networks in sorted(city_ips.items()):
-              filename = f"{province}.txt"
+          for city, networks in city_ips.items():
+              filename = f"{city}.txt"
               with open(filename, 'w') as f:
                   for network in networks:
                       f.write(network + '\n')
