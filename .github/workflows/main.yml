@@ -1,0 +1,122 @@
+name: Update Vietnam IP Lists by City
+
+on:
+  schedule:
+    # Chạy vào 2 giờ sáng mỗi ngày (UTC)
+    - cron: '0 2 * * *'
+  workflow_dispatch: # Cho phép chạy thủ công
+
+jobs:
+  update-ip-lists:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: |
+          pip install requests ipaddress
+          
+      - name: Download and process IP data
+        env:
+          IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
+        run: |
+          python << 'EOF'
+          import requests
+          import gzip
+          import csv
+          import ipaddress
+          import time
+          import os
+          from collections import defaultdict
+          
+          # Token từ GitHub Secrets hoặc sử dụng token trong URL
+          TOKEN = os.environ.get('IPINFO_TOKEN', 'db39199da5388b')
+          
+          print("Đang tải file IPinfo Lite...")
+          url = f"https://ipinfo.io/data/ipinfo_lite.csv.gz?_src=frontend&token={TOKEN}"
+          response = requests.get(url)
+          
+          if response.status_code != 200:
+              print(f"Lỗi tải file: {response.status_code}")
+              exit(1)
+          
+          # Giải nén và đọc CSV
+          print("Đang giải nén và xử lý dữ liệu...")
+          content = gzip.decompress(response.content).decode('utf-8')
+          csv_reader = csv.DictReader(content.splitlines())
+          
+          # Lọc các network của Việt Nam
+          vietnam_networks = []
+          for row in csv_reader:
+              if row.get('country') == 'VN':
+                  vietnam_networks.append(row['start_ip'] + '/' + row['cidr'])
+          
+          print(f"Tìm thấy {len(vietnam_networks)} networks của Việt Nam")
+          
+          # Lưu danh sách tất cả IP networks
+          with open('vietnam.txt', 'w') as f:
+              for network in vietnam_networks:
+                  f.write(network + '\n')
+          
+          print("Đã lưu vietnam.txt")
+          
+          # Phân loại theo thành phố
+          city_ips = defaultdict(list)
+          total_networks = len(vietnam_networks)
+          
+          for idx, network in enumerate(vietnam_networks, 1):
+              # Lấy IP đầu tiên của network
+              ip = network.split('/')[0]
+              
+              print(f"Đang kiểm tra {ip} ({idx}/{total_networks})...")
+              
+              try:
+                  # Gọi API IPinfo để lấy thông tin thành phố
+                  response = requests.get(f"https://ipinfo.io/{ip}/json?token={TOKEN}")
+                  
+                  if response.status_code == 200:
+                      data = response.json()
+                      city = data.get('city', 'Unknown')
+                      
+                      # Chuẩn hóa tên thành phố thành filename
+                      city_filename = city.lower().replace(' ', '').replace('-', '')
+                      city_ips[city_filename].append(network)
+                      
+                      print(f"  → {city}")
+                  else:
+                      print(f"  → Lỗi API: {response.status_code}")
+                      city_ips['unknown'].append(network)
+                  
+                  # Rate limiting: 1000 requests/day với free tier
+                  # Delay 100ms giữa các request
+                  time.sleep(0.1)
+                  
+              except Exception as e:
+                  print(f"  → Lỗi: {str(e)}")
+                  city_ips['unknown'].append(network)
+          
+          # Lưu file cho từng thành phố
+          print("\nĐang tạo file cho từng thành phố...")
+          for city, networks in city_ips.items():
+              filename = f"{city}.txt"
+              with open(filename, 'w') as f:
+                  for network in networks:
+                      f.write(network + '\n')
+              print(f"Đã tạo {filename} với {len(networks)} networks")
+          
+          print("\nHoàn thành!")
+          EOF
+          
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add *.txt
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update Vietnam IP lists by city - $(date +'%Y-%m-%d')" && git push)
