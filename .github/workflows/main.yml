@@ -8,6 +8,7 @@ on:
 jobs:
   update-ip-lists:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     
     steps:
       - name: Checkout repository
@@ -20,7 +21,7 @@ jobs:
           
       - name: Install dependencies
         run: |
-          pip install requests
+          pip install requests aiohttp
           
       - name: Download and process IP data
         run: |
@@ -28,7 +29,8 @@ jobs:
           import requests
           import gzip
           import json
-          import time
+          import asyncio
+          import aiohttp
           from collections import defaultdict
           
           TOKEN = 'db39199da5388b'
@@ -54,19 +56,46 @@ jobs:
           
           print("Đã lưu vietnam.txt")
           
+          # Async check IPs
           city_ips = defaultdict(list)
           total = len(vietnam_networks)
+          checked = 0
           
-          for idx, network in enumerate(vietnam_networks, 1):
-              ip = network.split('/')[0]
-              print(f"Đang kiểm tra {ip} ({idx}/{total})...")
-              
-              response = requests.get(f"https://ipinfo.io/{ip}/json?token={TOKEN}")
-              data = response.json()
-              state = data.get('region', 'Unknown').lower().replace(' ', '').replace('(', '').replace(')', '')
-              
-              city_ips[state].append(network)
-              time.sleep(0.1)
+          async def check_ip(session, network, semaphore):
+              global checked
+              async with semaphore:
+                  ip = network.split('/')[0]
+                  try:
+                      async with session.get(f"https://ipinfo.io/{ip}/json?token={TOKEN}") as response:
+                          data = await response.json()
+                          state = data.get('region', 'Unknown')
+                          
+                          if 'Ho Chi Minh' in state or 'HCMC' in state:
+                              state = 'hochiminh'
+                          elif 'Hanoi' in state or 'Ha Noi' in state:
+                              state = 'hanoi'
+                          elif 'Da Nang' in state:
+                              state = 'danang'
+                          else:
+                              state = state.lower().replace(' ', '').replace('(', '').replace(')', '')
+                          
+                          city_ips[state].append(network)
+                          
+                          checked += 1
+                          if checked % 500 == 0:
+                              print(f"Đã kiểm tra {checked}/{total} networks...")
+                  except Exception as e:
+                      print(f"Lỗi {ip}: {e}")
+                      city_ips['unknown'].append(network)
+          
+          async def main():
+              semaphore = asyncio.Semaphore(50)  # 50 requests đồng thời
+              async with aiohttp.ClientSession() as session:
+                  tasks = [check_ip(session, network, semaphore) for network in vietnam_networks]
+                  await asyncio.gather(*tasks)
+          
+          print("Đang kiểm tra tất cả IP networks...")
+          asyncio.run(main())
           
           print("\nĐang tạo file cho từng thành phố...")
           for city, networks in city_ips.items():
