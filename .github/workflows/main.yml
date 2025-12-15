@@ -46,9 +46,12 @@ jobs:
           for line in content.strip().split('\n'):
               data = json.loads(line)
               if data['country_code'] == 'VN':
-                  vietnam_networks.append(data['network'])
+                  network = data['network']
+                  # Chỉ lấy IPv4 (không có dấu :)
+                  if ':' not in network:
+                      vietnam_networks.append(network)
           
-          print(f"Tìm thấy {len(vietnam_networks)} networks của Việt Nam")
+          print(f"Tìm thấy {len(vietnam_networks)} networks IPv4 của Việt Nam")
           
           with open('vietnam.txt', 'w') as f:
               for network in vietnam_networks:
@@ -89,7 +92,7 @@ jobs:
                       city_ips['unknown'].append(network)
           
           async def main():
-              semaphore = asyncio.Semaphore(50)  # 50 requests đồng thời
+              semaphore = asyncio.Semaphore(50)
               async with aiohttp.ClientSession() as session:
                   tasks = [check_ip(session, network, semaphore) for network in vietnam_networks]
                   await asyncio.gather(*tasks)
