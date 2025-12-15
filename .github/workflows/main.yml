@@ -63,9 +63,9 @@ jobs:
               
               response = requests.get(f"https://ipinfo.io/{ip}/json?token={TOKEN}")
               data = response.json()
-              city = data.get('city', 'Unknown').lower().replace(' ', '')
+              state = data.get('region', 'Unknown').lower().replace(' ', '').replace('(', '').replace(')', '')
               
-              city_ips[city].append(network)
+              city_ips[state].append(network)
               time.sleep(0.1)
           
           print("\nĐang tạo file cho từng thành phố...")
