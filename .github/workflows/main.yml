@@ -58,20 +58,16 @@ jobs:
           city_ips = defaultdict(list)
           vietnam_networks = []
           
-          # Debug: In 10 dòng đầu
           lines = content.strip().split('\n')
-          print(f"\n=== DEBUG: Tổng số dòng: {len(lines)} ===")
-          print("=== 10 dòng đầu tiên: ===")
-          for i, line in enumerate(lines[:10]):
-              print(f"Dòng {i+1}: {line}")
+          print(f"Tổng số dòng: {len(lines)}")
           
           processed = 0
           vn_count = 0
           
           for line in lines:
               try:
-                  # Split bằng tab
-                  parts = line.split('\t')
+                  # Split bằng dấu phẩy (CSV)
+                  parts = line.split(',')
                   
                   if len(parts) >= 4:
                       country_code = parts[3]
@@ -83,10 +79,6 @@ jobs:
                               ip_start = parts[0]
                               ip_end = parts[1]
                               region = parts[4]
-                              
-                              # Debug: In vài dòng VN đầu tiên
-                              if vn_count <= 5:
-                                  print(f"\nVN #{vn_count}: {ip_start} - {ip_end} | Region: {region}")
                               
                               # Convert IP range to CIDR networks
                               try:
@@ -109,15 +101,11 @@ jobs:
                                   if processed % 1000 == 0:
                                       print(f"Đã xử lý {processed} dải IP VN...")
                                       
-                              except (ipaddress.AddressValueError, ValueError) as e:
+                              except (ipaddress.AddressValueError, ValueError):
                                   # Skip IPv6 or invalid IPs
-                                  if vn_count <= 5:
-                                      print(f"  -> Skip (không phải IPv4 hoặc lỗi): {e}")
                                   continue
                           
               except Exception as e:
-                  if vn_count <= 5:
-                      print(f"Lỗi xử lý dòng: {e}")
                   continue
           
           print(f"\n=== THỐNG KÊ ===")
@@ -126,10 +114,11 @@ jobs:
           print(f"Số thành phố/tỉnh: {len(city_ips)}")
           
           # Lưu file vietnam.txt (tất cả networks)
+          unique_all = sorted(set(vietnam_networks))
           with open('vietnam.txt', 'w') as f:
-              for network in sorted(set(vietnam_networks)):
+              for network in unique_all:
                   f.write(network + '\n')
-          print(f"\nĐã lưu vietnam.txt với {len(set(vietnam_networks))} networks")
+          print(f"\nĐã lưu vietnam.txt với {len(unique_all)} networks")
           
           # Lưu file cho từng thành phố
           if city_ips:
@@ -143,7 +132,7 @@ jobs:
                   print(f"Đã tạo {filename} với {len(unique_networks)} networks")
               
               print("\n=== Top 10 thành phố có nhiều networks nhất ===")
-              sorted_cities = sorted(city_ips.items(), key=lambda x: len(x[1]), reverse=True)[:10]
+              sorted_cities = sorted(city_ips.items(), key=lambda x: len(set(x[1])), reverse=True)[:10]
               for city, networks in sorted_cities:
                   print(f"{city}: {len(set(networks))} networks")
           
