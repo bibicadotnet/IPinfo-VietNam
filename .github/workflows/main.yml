@@ -8,7 +8,7 @@ on:
 jobs:
   update-ip-lists:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 60
     
     steps:
       - name: Checkout repository
@@ -21,135 +21,110 @@ jobs:
           
       - name: Install dependencies
         run: |
-          pip install requests aiohttp
+          pip install requests
           
       - name: Download and process IP data
         run: |
           python << 'EOF'
           import requests
           import gzip
-          import json
-          import asyncio
-          import aiohttp
+          import csv
           from collections import defaultdict
-          import time
+          import ipaddress
+          import io
+          import unicodedata
+          import re
           
-          TOKEN = 'db39199da5388b'
+          def normalize_city_name(city):
+              """Chuyển tên thành phố về dạng chữ thường, bỏ dấu, bỏ khoảng trắng"""
+              if not city or city == 'Unknown':
+                  return 'unknown'
+              
+              # Bỏ dấu tiếng Việt
+              city = unicodedata.normalize('NFD', city)
+              city = ''.join(char for char in city if unicodedata.category(char) != 'Mn')
+              
+              # Chuyển thường, bỏ khoảng trắng và ký tự đặc biệt
+              city = city.lower()
+              city = re.sub(r'[^a-z0-9]', '', city)
+              
+              return city if city else 'unknown'
           
-          print("Đang tải file IPinfo Lite...")
-          url = f"https://ipinfo.io/data/ipinfo_lite.json.gz?_src=frontend&token={TOKEN}"
+          print("Đang tải DB-IP City Lite database...")
+          url = "https://download.db-ip.com/free/dbip-city-lite-2025-12.csv.gz"
           response = requests.get(url)
           
           print("Đang giải nén và xử lý dữ liệu...")
-          content = gzip.decompress(response.content).decode('utf-8')
+          content = gzip.decompress(response.content)
           
-          vietnam_networks = []
-          for line in content.strip().split('\n'):
-              data = json.loads(line)
-              if data['country_code'] == 'VN':
-                  network = data['network']
-                  # Chỉ lấy IPv4 (không có dấu :)
-                  if ':' not in network:
-                      vietnam_networks.append(network)
-          
-          print(f"Tìm thấy {len(vietnam_networks)} networks IPv4 của Việt Nam")
-          
-          with open('vietnam.txt', 'w') as f:
-              for network in vietnam_networks:
-                  f.write(network + '\n')
-          
-          print("Đã lưu vietnam.txt")
-          
-          # Async check IPs với retry và delay
           city_ips = defaultdict(list)
-          total = len(vietnam_networks)
-          checked = 0
-          failed = []
+          vietnam_networks = []
           
-          async def check_ip(session, network, semaphore):
-              global checked
-              async with semaphore:
-                  ip = network.split('/')[0]
-                  max_retries = 3
-                  
-                  for attempt in range(max_retries):
+          # Đọc CSV
+          csv_file = io.StringIO(content.decode('utf-8'))
+          reader = csv.reader(csv_file, delimiter='\t')
+          
+          processed = 0
+          for row in reader:
+              try:
+                  if len(row) >= 5 and row[3] == 'VN':  # Country code = VN
+                      ip_start = row[0]
+                      ip_end = row[1]
+                      region = row[4] if len(row) > 4 else 'Unknown'  # Cột thứ 5 (index 4)
+                      
+                      # Convert IP range to CIDR networks
                       try:
-                          # Thêm delay giữa các requests
-                          await asyncio.sleep(0.05)
+                          start_ip = ipaddress.IPv4Address(ip_start)
+                          end_ip = ipaddress.IPv4Address(ip_end)
                           
-                          async with session.get(
-                              f"https://ipinfo.io/{ip}/json?token={TOKEN}",
-                              timeout=aiohttp.ClientTimeout(total=10)
-                          ) as response:
-                              if response.status == 200:
-                                  data = await response.json()
-                                  region = data.get('region', 'Unknown')
-                                  
-                                  # Chuẩn hóa tên thành phố
-                                  if 'Ho Chi Minh' in region or 'HCMC' in region:
-                                      state = 'hochiminh'
-                                  elif 'Hanoi' in region or 'Ha Noi' in region:
-                                      state = 'hanoi'
-                                  elif 'Da Nang' in region:
-                                      state = 'danang'
-                                  elif 'Can Tho' in region:
-                                      state = 'cantho'
-                                  elif 'Hai Phong' in region:
-                                      state = 'haiphong'
-                                  elif region and region != 'Unknown':
-                                      state = region.lower().replace(' ', '').replace('(', '').replace(')', '').replace('-', '')
-                                  else:
-                                      state = 'unknown'
-                                  
-                                  city_ips[state].append(network)
-                                  
-                                  checked += 1
-                                  if checked % 100 == 0:
-                                      print(f"Đã kiểm tra {checked}/{total} networks...")
-                                  break
-                              elif response.status == 429:
-                                  # Rate limited, chờ lâu hơn
-                                  print(f"Rate limited, chờ 5 giây...")
-                                  await asyncio.sleep(5)
-                              else:
-                                  # Lỗi khác, retry
-                                  if attempt < max_retries - 1:
-                                      await asyncio.sleep(1)
-                                  else:
-                                      raise Exception(f"HTTP {response.status}")
-                      except Exception as e:
-                          if attempt == max_retries - 1:
-                              print(f"Lỗi {ip} sau {max_retries} lần thử: {e}")
-                              failed.append(network)
-                              city_ips['unknown'].append(network)
-                              checked += 1
-                          else:
-                              await asyncio.sleep(1)
+                          # Tạo CIDR từ range
+                          cidrs = list(ipaddress.summarize_address_range(start_ip, end_ip))
+                          
+                          # Chuẩn hóa tên thành phố - ĐƠN GIẢN
+                          city_normalized = normalize_city_name(region)
+                          
+                          # Thêm vào danh sách
+                          for cidr in cidrs:
+                              network_str = str(cidr)
+                              city_ips[city_normalized].append(network_str)
+                              vietnam_networks.append(network_str)
+                          
+                          processed += 1
+                          if processed % 1000 == 0:
+                              print(f"Đã xử lý {processed} dải IP...")
+                              
+                      except (ipaddress.AddressValueError, ValueError):
+                          # Skip IPv6 or invalid IPs
+                          continue
+                          
+              except Exception as e:
+                  print(f"Lỗi xử lý dòng: {e}")
+                  continue
           
-          async def main():
-              # Giảm concurrent requests xuống 10
-              semaphore = asyncio.Semaphore(10)
-              connector = aiohttp.TCPConnector(limit=10)
-              async with aiohttp.ClientSession(connector=connector) as session:
-                  tasks = [check_ip(session, network, semaphore) for network in vietnam_networks]
-                  await asyncio.gather(*tasks)
+          print(f"\nTổng cộng tìm thấy {len(vietnam_networks)} networks IPv4 của Việt Nam")
+          print(f"Phân bổ vào {len(city_ips)} thành phố/tỉnh")
           
-          print("Đang kiểm tra tất cả IP networks...")
-          start_time = time.time()
-          asyncio.run(main())
-          elapsed = time.time() - start_time
+          # Lưu file vietnam.txt (tất cả networks)
+          with open('vietnam.txt', 'w') as f:
+              for network in sorted(set(vietnam_networks)):
+                  f.write(network + '\n')
+          print(f"Đã lưu vietnam.txt với {len(set(vietnam_networks))} networks")
           
-          print(f"\nHoàn thành trong {elapsed:.1f} giây")
-          print(f"Thành công: {total - len(failed)}/{total}")
-          print(f"Thất bại: {len(failed)}/{total}")
-          
+          # Lưu file cho từng thành phố
           print("\nĐang tạo file cho từng thành phố...")
           for city, networks in sorted(city_ips.items()):
               filename = f"{city}.txt"
+              # Loại bỏ duplicate và sort
+              unique_networks = sorted(set(networks))
               with open(filename, 'w') as f:
-                  for network in networks:
+                  for network in unique_networks:
                       f.write(network + '\n')
-              print(f"Đã tạo {filename} với {len(networks)} networks")
+              print(f"Đã tạo {filename} với {len(unique_networks)} networks")
+          
+          print("\n=== Top 10 thành phố có nhiều networks nhất ===")
+          sorted_cities = sorted(city_ips.items(), key=lambda x: len(x[1]), reverse=True)[:10]
+          for city, networks in sorted_cities:
+              print(f"{city}: {len(set(networks))} networks")
           
           print("\nHoàn thành!")
           EOF
@@ -159,5 +134,5 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add *.txt
-          git commit -m "Update Vietnam IP lists" || exit 0
+          git commit -m "Update Vietnam IP lists [$(date +'%Y-%m-%d')]" || exit 0
           git push
