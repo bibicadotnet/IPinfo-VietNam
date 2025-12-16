@@ -61,40 +61,39 @@ jobs:
           city_ips = defaultdict(list)
           total = len(vietnam_networks)
           checked = [0]
-          debug_count = [0]
           
           async def check_ip(session, network, semaphore):
               async with semaphore:
                   ip = network.split('/')[0]
                   try:
-                      async with session.get(f"https://ipinfo.io/{ip}/json?token={TOKEN}", timeout=10) as response:
-                          data = await response.json()
+                      async with session.get(f"https://info.addr.tools/{ip}", timeout=10) as response:
+                          text = await response.text()
                           
-                          # Debug 5 IPs đầu
-                          if debug_count[0] < 5:
-                              print(f"Debug {ip}: {data}")
-                              debug_count[0] += 1
-                          
-                          state = data.get('region', '')
-                          
-                          if not state:
-                              city_ips['unknown'].append(network)
-                          elif 'Ho Chi Minh' in state or 'HCMC' in state:
-                              city_ips['hochiminh'].append(network)
-                          elif 'Hanoi' in state or 'Ha Noi' in state:
-                              city_ips['hanoi'].append(network)
-                          elif 'Da Nang' in state:
-                              city_ips['danang'].append(network)
+                          lines = text.strip().split('\n')
+                          if len(lines) >= 2:
+                              location = lines[1].strip()
+                              
+                              if 'Ho Chi Minh' in location or 'HCMC' in location:
+                                  state = 'hochiminh'
+                              elif 'Hanoi' in location or 'Ha Noi' in location:
+                                  state = 'hanoi'
+                              elif 'Da Nang' in location:
+                                  state = 'danang'
+                              else:
+                                  parts = location.split(',')
+                                  if len(parts) >= 2:
+                                      state = parts[1].strip().lower().replace(' ', '').replace('(', '').replace(')', '').replace('province', '')
+                                  else:
+                                      state = 'unknown'
+                              
+                              city_ips[state].append(network)
                           else:
-                              state_clean = state.lower().replace(' ', '').replace('(', '').replace(')', '').replace('province', '')
-                              city_ips[state_clean].append(network)
+                              city_ips['unknown'].append(network)
                           
                           checked[0] += 1
                           if checked[0] % 500 == 0:
                               print(f"Đã kiểm tra {checked[0]}/{total} networks...")
                   except Exception as e:
-                      if debug_count[0] < 10:
-                          print(f"Lỗi {ip}: {e}")
                       city_ips['unknown'].append(network)
           
           async def main():
