@@ -32,6 +32,7 @@ jobs:
           import asyncio
           import aiohttp
           from collections import defaultdict
+          import time
           
           TOKEN = 'db39199da5388b'
           
@@ -59,49 +60,91 @@ jobs:
           
           print("Đã lưu vietnam.txt")
           
-          # Async check IPs
+          # Async check IPs với retry và delay
           city_ips = defaultdict(list)
           total = len(vietnam_networks)
           checked = 0
+          failed = []
           
           async def check_ip(session, network, semaphore):
               global checked
               async with semaphore:
                   ip = network.split('/')[0]
-                  try:
-                      async with session.get(f"https://ipinfo.io/{ip}/json?token={TOKEN}") as response:
-                          data = await response.json()
-                          state = data.get('region', 'Unknown')
+                  max_retries = 3
+                  
+                  for attempt in range(max_retries):
+                      try:
+                          # Thêm delay giữa các requests
+                          await asyncio.sleep(0.05)
                           
-                          if 'Ho Chi Minh' in state or 'HCMC' in state:
-                              state = 'hochiminh'
-                          elif 'Hanoi' in state or 'Ha Noi' in state:
-                              state = 'hanoi'
-                          elif 'Da Nang' in state:
-                              state = 'danang'
+                          async with session.get(
+                              f"https://ipinfo.io/{ip}/json?token={TOKEN}",
+                              timeout=aiohttp.ClientTimeout(total=10)
+                          ) as response:
+                              if response.status == 200:
+                                  data = await response.json()
+                                  region = data.get('region', 'Unknown')
+                                  
+                                  # Chuẩn hóa tên thành phố
+                                  if 'Ho Chi Minh' in region or 'HCMC' in region:
+                                      state = 'hochiminh'
+                                  elif 'Hanoi' in region or 'Ha Noi' in region:
+                                      state = 'hanoi'
+                                  elif 'Da Nang' in region:
+                                      state = 'danang'
+                                  elif 'Can Tho' in region:
+                                      state = 'cantho'
+                                  elif 'Hai Phong' in region:
+                                      state = 'haiphong'
+                                  elif region and region != 'Unknown':
+                                      state = region.lower().replace(' ', '').replace('(', '').replace(')', '').replace('-', '')
+                                  else:
+                                      state = 'unknown'
+                                  
+                                  city_ips[state].append(network)
+                                  
+                                  checked += 1
+                                  if checked % 100 == 0:
+                                      print(f"Đã kiểm tra {checked}/{total} networks...")
+                                  break
+                              elif response.status == 429:
+                                  # Rate limited, chờ lâu hơn
+                                  print(f"Rate limited, chờ 5 giây...")
+                                  await asyncio.sleep(5)
+                              else:
+                                  # Lỗi khác, retry
+                                  if attempt < max_retries - 1:
+                                      await asyncio.sleep(1)
+                                  else:
+                                      raise Exception(f"HTTP {response.status}")
+                      except Exception as e:
+                          if attempt == max_retries - 1:
+                              print(f"Lỗi {ip} sau {max_retries} lần thử: {e}")
+                              failed.append(network)
+                              city_ips['unknown'].append(network)
+                              checked += 1
                           else:
-                              state = state.lower().replace(' ', '').replace('(', '').replace(')', '')
-                          
-                          city_ips[state].append(network)
-                          
-                          checked += 1
-                          if checked % 500 == 0:
-                              print(f"Đã kiểm tra {checked}/{total} networks...")
-                  except Exception as e:
-                      print(f"Lỗi {ip}: {e}")
-                      city_ips['unknown'].append(network)
+                              await asyncio.sleep(1)
           
           async def main():
-              semaphore = asyncio.Semaphore(50)
-              async with aiohttp.ClientSession() as session:
+              # Giảm concurrent requests xuống 10
+              semaphore = asyncio.Semaphore(10)
+              connector = aiohttp.TCPConnector(limit=10)
+              async with aiohttp.ClientSession(connector=connector) as session:
                   tasks = [check_ip(session, network, semaphore) for network in vietnam_networks]
                   await asyncio.gather(*tasks)
           
           print("Đang kiểm tra tất cả IP networks...")
+          start_time = time.time()
           asyncio.run(main())
+          elapsed = time.time() - start_time
+          
+          print(f"\nHoàn thành trong {elapsed:.1f} giây")
+          print(f"Thành công: {total - len(failed)}/{total}")
+          print(f"Thất bại: {len(failed)}/{total}")
           
           print("\nĐang tạo file cho từng thành phố...")
-          for city, networks in city_ips.items():
+          for city, networks in sorted(city_ips.items()):
               filename = f"{city}.txt"
               with open(filename, 'w') as f:
                   for network in networks:
