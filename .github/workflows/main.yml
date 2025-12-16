@@ -28,10 +28,8 @@ jobs:
           python << 'EOF'
           import requests
           import gzip
-          import csv
           from collections import defaultdict
           import ipaddress
-          import io
           import unicodedata
           import re
           
@@ -55,76 +53,99 @@ jobs:
           response = requests.get(url)
           
           print("Đang giải nén và xử lý dữ liệu...")
-          content = gzip.decompress(response.content)
+          content = gzip.decompress(response.content).decode('utf-8')
           
           city_ips = defaultdict(list)
           vietnam_networks = []
           
-          # Đọc CSV
-          csv_file = io.StringIO(content.decode('utf-8'))
-          reader = csv.reader(csv_file, delimiter='\t')
+          # Debug: In 10 dòng đầu
+          lines = content.strip().split('\n')
+          print(f"\n=== DEBUG: Tổng số dòng: {len(lines)} ===")
+          print("=== 10 dòng đầu tiên: ===")
+          for i, line in enumerate(lines[:10]):
+              print(f"Dòng {i+1}: {line}")
           
           processed = 0
-          for row in reader:
+          vn_count = 0
+          
+          for line in lines:
               try:
-                  if len(row) >= 5 and row[3] == 'VN':  # Country code = VN
-                      ip_start = row[0]
-                      ip_end = row[1]
-                      region = row[4] if len(row) > 4 else 'Unknown'  # Cột thứ 5 (index 4)
+                  # Split bằng tab
+                  parts = line.split('\t')
+                  
+                  if len(parts) >= 4:
+                      country_code = parts[3]
                       
-                      # Convert IP range to CIDR networks
-                      try:
-                          start_ip = ipaddress.IPv4Address(ip_start)
-                          end_ip = ipaddress.IPv4Address(ip_end)
+                      if country_code == 'VN':
+                          vn_count += 1
                           
-                          # Tạo CIDR từ range
-                          cidrs = list(ipaddress.summarize_address_range(start_ip, end_ip))
-                          
-                          # Chuẩn hóa tên thành phố - ĐƠN GIẢN
-                          city_normalized = normalize_city_name(region)
-                          
-                          # Thêm vào danh sách
-                          for cidr in cidrs:
-                              network_str = str(cidr)
-                              city_ips[city_normalized].append(network_str)
-                              vietnam_networks.append(network_str)
-                          
-                          processed += 1
-                          if processed % 1000 == 0:
-                              print(f"Đã xử lý {processed} dải IP...")
+                          if len(parts) >= 5:
+                              ip_start = parts[0]
+                              ip_end = parts[1]
+                              region = parts[4]
                               
-                      except (ipaddress.AddressValueError, ValueError):
-                          # Skip IPv6 or invalid IPs
-                          continue
+                              # Debug: In vài dòng VN đầu tiên
+                              if vn_count <= 5:
+                                  print(f"\nVN #{vn_count}: {ip_start} - {ip_end} | Region: {region}")
+                              
+                              # Convert IP range to CIDR networks
+                              try:
+                                  start_ip = ipaddress.IPv4Address(ip_start)
+                                  end_ip = ipaddress.IPv4Address(ip_end)
+                                  
+                                  # Tạo CIDR từ range
+                                  cidrs = list(ipaddress.summarize_address_range(start_ip, end_ip))
+                                  
+                                  # Chuẩn hóa tên thành phố
+                                  city_normalized = normalize_city_name(region)
+                                  
+                                  # Thêm vào danh sách
+                                  for cidr in cidrs:
+                                      network_str = str(cidr)
+                                      city_ips[city_normalized].append(network_str)
+                                      vietnam_networks.append(network_str)
+                                  
+                                  processed += 1
+                                  if processed % 1000 == 0:
+                                      print(f"Đã xử lý {processed} dải IP VN...")
+                                      
+                              except (ipaddress.AddressValueError, ValueError) as e:
+                                  # Skip IPv6 or invalid IPs
+                                  if vn_count <= 5:
+                                      print(f"  -> Skip (không phải IPv4 hoặc lỗi): {e}")
+                                  continue
                           
               except Exception as e:
-                  print(f"Lỗi xử lý dòng: {e}")
+                  if vn_count <= 5:
+                      print(f"Lỗi xử lý dòng: {e}")
                   continue
           
-          print(f"\nTổng cộng tìm thấy {len(vietnam_networks)} networks IPv4 của Việt Nam")
-          print(f"Phân bổ vào {len(city_ips)} thành phố/tỉnh")
+          print(f"\n=== THỐNG KÊ ===")
+          print(f"Tổng dòng VN tìm thấy: {vn_count}")
+          print(f"Tổng networks IPv4 VN: {len(vietnam_networks)}")
+          print(f"Số thành phố/tỉnh: {len(city_ips)}")
           
           # Lưu file vietnam.txt (tất cả networks)
           with open('vietnam.txt', 'w') as f:
               for network in sorted(set(vietnam_networks)):
                   f.write(network + '\n')
-          print(f"Đã lưu vietnam.txt với {len(set(vietnam_networks))} networks")
+          print(f"\nĐã lưu vietnam.txt với {len(set(vietnam_networks))} networks")
           
           # Lưu file cho từng thành phố
-          print("\nĐang tạo file cho từng thành phố...")
-          for city, networks in sorted(city_ips.items()):
-              filename = f"{city}.txt"
-              # Loại bỏ duplicate và sort
-              unique_networks = sorted(set(networks))
-              with open(filename, 'w') as f:
-                  for network in unique_networks:
-                      f.write(network + '\n')
-              print(f"Đã tạo {filename} với {len(unique_networks)} networks")
-          
-          print("\n=== Top 10 thành phố có nhiều networks nhất ===")
-          sorted_cities = sorted(city_ips.items(), key=lambda x: len(x[1]), reverse=True)[:10]
-          for city, networks in sorted_cities:
-              print(f"{city}: {len(set(networks))} networks")
+          if city_ips:
+              print("\nĐang tạo file cho từng thành phố...")
+              for city, networks in sorted(city_ips.items()):
+                  filename = f"{city}.txt"
+                  unique_networks = sorted(set(networks))
+                  with open(filename, 'w') as f:
+                      for network in unique_networks:
+                          f.write(network + '\n')
+                  print(f"Đã tạo {filename} với {len(unique_networks)} networks")
+              
+              print("\n=== Top 10 thành phố có nhiều networks nhất ===")
+              sorted_cities = sorted(city_ips.items(), key=lambda x: len(x[1]), reverse=True)[:10]
+              for city, networks in sorted_cities:
+                  print(f"{city}: {len(set(networks))} networks")
           
           print("\nHoàn thành!")
           EOF
