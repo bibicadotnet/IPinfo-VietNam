@@ -49,7 +49,7 @@ jobs:
               return city if city else 'unknown'
           
           print("Đang tải DB-IP City Lite database...")
-          url = "https://download.db-ip.com/free/dbip-city-lite-2025-12.csv.gz"
+          url = "https://download.db-ip.com/free/dbip-city-lite-2026-02.csv.gz"
           response = requests.get(url)
           
           print("Đang giải nén và xử lý dữ liệu...")
