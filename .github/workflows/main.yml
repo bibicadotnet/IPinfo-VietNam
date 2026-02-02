@@ -32,7 +32,9 @@ jobs:
           import ipaddress
           import unicodedata
           import re
-          
+          import datetime
+          import sys
+
           def normalize_city_name(city):
               """Chuyển tên thành phố về dạng chữ thường, bỏ dấu, bỏ khoảng trắng"""
               if not city or city == 'Unknown':
@@ -47,11 +49,34 @@ jobs:
               city = re.sub(r'[^a-z0-9]', '', city)
               
               return city if city else 'unknown'
+
+          # --- TỰ ĐỘNG DÒ TÌM URL MỚI NHẤT ---
+          def find_latest_url():
+              base_url = "https://download.db-ip.com/free/dbip-city-lite-{}-{}.csv.gz"
+              dt = datetime.datetime.utcnow().replace(day=1)
+              for i in range(12):
+                  year = dt.year
+                  month = f"{dt.month:02d}"
+                  url = base_url.format(year, month)
+                  try:
+                      r = requests.head(url, timeout=10)
+                      if r.status_code == 200:
+                          return url
+                  except:
+                      pass
+                  dt = (dt - datetime.timedelta(days=1)).replace(day=1)
+              return None
+
+          print("Đang dò tìm link DB-IP mới nhất...")
+          url = find_latest_url()
+          if not url:
+              print("Không tìm thấy link tải hợp lệ!")
+              sys.exit(1)
           
-          print("Đang tải DB-IP City Lite database...")
-          url = "https://download.db-ip.com/free/dbip-city-lite-2026-02.csv.gz"
+          print(f"Đang tải dữ liệu từ: {url}")
           response = requests.get(url)
-          
+          # ----------------------------------
+
           print("Đang giải nén và xử lý dữ liệu...")
           content = gzip.decompress(response.content).decode('utf-8')
           
