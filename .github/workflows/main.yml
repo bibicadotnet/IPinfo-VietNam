@@ -1,173 +1,192 @@
-name: Update Vietnam IP Lists by City
+name: Update IP Lists by Country
 
 on:
   schedule:
     - cron: '0 2 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   update-ip-lists:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        
+
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          
+
       - name: Install dependencies
         run: |
           pip install requests
-          
+
       - name: Download and process IP data
         run: |
           python << 'EOF'
-          import requests
-          import gzip
-          from collections import defaultdict
-          import ipaddress
-          import unicodedata
-          import re
+          import csv
           import datetime
+          import gzip
+          import ipaddress
+          import os
+          import re
           import sys
+          import unicodedata
+          from collections import defaultdict
+
+          import requests
+
+          BASE_URL = "https://download.db-ip.com/free/dbip-city-lite-{}-{}.csv.gz"
+          MIN_COUNTRIES = 150   # sanity check: DB-IP has ~240, refuse to commit if far fewer
+          OUT_DIR = "country"
+
 
           def normalize_city_name(city):
-              """Chuyển tên thành phố về dạng chữ thường, bỏ dấu, bỏ khoảng trắng"""
+              """Lowercase, strip Vietnamese diacritics, drop spaces/special chars."""
               if not city or city == 'Unknown':
                   return 'unknown'
-              
-              # Bỏ dấu tiếng Việt
               city = unicodedata.normalize('NFD', city)
-              city = ''.join(char for char in city if unicodedata.category(char) != 'Mn')
-              
-              # Chuyển thường, bỏ khoảng trắng và ký tự đặc biệt
-              city = city.lower()
-              city = re.sub(r'[^a-z0-9]', '', city)
-              
-              return city if city else 'unknown'
+              city = ''.join(c for c in city if unicodedata.category(c) != 'Mn')
+              city = re.sub(r'[^a-z0-9]', '', city.lower())
+              return city or 'unknown'
 
-          # --- TỰ ĐỘNG DÒ TÌM URL MỚI NHẤT ---
+
           def find_latest_url():
-              base_url = "https://download.db-ip.com/free/dbip-city-lite-{}-{}.csv.gz"
-              dt = datetime.datetime.utcnow().replace(day=1)
-              for i in range(12):
-                  year = dt.year
-                  month = f"{dt.month:02d}"
-                  url = base_url.format(year, month)
+              dt = datetime.datetime.now(datetime.timezone.utc).replace(day=1)
+              for _ in range(12):
+                  url = BASE_URL.format(dt.year, f"{dt.month:02d}")
                   try:
-                      r = requests.head(url, timeout=10)
-                      if r.status_code == 200:
+                      if requests.head(url, timeout=10).status_code == 200:
                           return url
-                  except:
+                  except requests.RequestException:
                       pass
                   dt = (dt - datetime.timedelta(days=1)).replace(day=1)
               return None
 
-          print("Đang dò tìm link DB-IP mới nhất...")
-          url = find_latest_url()
-          if not url:
-              print("Không tìm thấy link tải hợp lệ!")
-              sys.exit(1)
-          
-          print(f"Đang tải dữ liệu từ: {url}")
-          response = requests.get(url)
-          # ----------------------------------
 
-          print("Đang giải nén và xử lý dữ liệu...")
-          content = gzip.decompress(response.content).decode('utf-8')
-          
-          city_ips = defaultdict(list)
-          vietnam_networks = []
-          
-          lines = content.strip().split('\n')
-          print(f"Tổng số dòng: {len(lines)}")
-          
-          processed = 0
-          vn_count = 0
-          
-          for line in lines:
-              try:
-                  # Split bằng dấu phẩy (CSV)
-                  parts = line.split(',')
-                  
-                  if len(parts) >= 4:
-                      country_code = parts[3]
-                      
-                      if country_code == 'VN':
-                          vn_count += 1
-                          
-                          if len(parts) >= 5:
-                              ip_start = parts[0]
-                              ip_end = parts[1]
-                              region = parts[4]
-                              
-                              # Convert IP range to CIDR networks
-                              try:
-                                  start_ip = ipaddress.IPv4Address(ip_start)
-                                  end_ip = ipaddress.IPv4Address(ip_end)
-                                  
-                                  # Tạo CIDR từ range
-                                  cidrs = list(ipaddress.summarize_address_range(start_ip, end_ip))
-                                  
-                                  # Chuẩn hóa tên thành phố
-                                  city_normalized = normalize_city_name(region)
-                                  
-                                  # Thêm vào danh sách
-                                  for cidr in cidrs:
-                                      network_str = str(cidr)
-                                      city_ips[city_normalized].append(network_str)
-                                      vietnam_networks.append(network_str)
-                                  
-                                  processed += 1
-                                  if processed % 1000 == 0:
-                                      print(f"Đã xử lý {processed} dải IP VN...")
-                                      
-                              except (ipaddress.AddressValueError, ValueError):
-                                  # Skip IPv6 or invalid IPs
-                                  continue
-                          
-              except Exception as e:
-                  continue
-          
-          print(f"\n=== THỐNG KÊ ===")
-          print(f"Tổng dòng VN tìm thấy: {vn_count}")
-          print(f"Tổng networks IPv4 VN: {len(vietnam_networks)}")
-          print(f"Số thành phố/tỉnh: {len(city_ips)}")
-          
-          # Lưu file vietnam.txt (tất cả networks)
-          unique_all = sorted(set(vietnam_networks))
-          with open('vietnam.txt', 'w') as f:
-              for network in unique_all:
-                  f.write(network + '\n')
-          print(f"\nĐã lưu vietnam.txt với {len(unique_all)} networks")
-          
-          # Lưu file cho từng thành phố
-          if city_ips:
-              print("\nĐang tạo file cho từng thành phố...")
-              for city, networks in sorted(city_ips.items()):
-                  filename = f"{city}.txt"
-                  unique_networks = sorted(set(networks))
-                  with open(filename, 'w') as f:
-                      for network in unique_networks:
-                          f.write(network + '\n')
-                  print(f"Đã tạo {filename} với {len(unique_networks)} networks")
-              
-              print("\n=== Top 10 thành phố có nhiều networks nhất ===")
-              sorted_cities = sorted(city_ips.items(), key=lambda x: len(set(x[1])), reverse=True)[:10]
-              for city, networks in sorted_cities:
-                  print(f"{city}: {len(set(networks))} networks")
-          
-          print("\nHoàn thành!")
+          def download(url, path):
+              with requests.get(url, stream=True, timeout=(10, 120)) as r:
+                  r.raise_for_status()
+                  with open(path, 'wb') as f:
+                      for chunk in r.iter_content(1 << 20):
+                          f.write(chunk)
+
+
+          def merge_ranges(ranges):
+              """Sort and merge overlapping/adjacent [start, end] integer ranges."""
+              merged = []
+              for s, e in sorted(ranges):
+                  if merged and s <= merged[-1][1] + 1:
+                      if e > merged[-1][1]:
+                          merged[-1][1] = e
+                  else:
+                      merged.append([s, e])
+              return merged
+
+
+          def to_cidrs(merged):
+              out = []
+              for s, e in merged:
+                  for net in ipaddress.summarize_address_range(
+                          ipaddress.IPv4Address(s), ipaddress.IPv4Address(e)):
+                      out.append(str(net))
+              return out
+
+
+          def process(path):
+              ranges = defaultdict(list)       # country code -> [[start, end], ...]
+              vn_cities = defaultdict(list)    # normalized VN province/city -> [cidr, ...]
+              rows = 0
+
+              with gzip.open(path, 'rt', encoding='utf-8', newline='') as f:
+                  # csv.reader handles quoted fields (names containing commas)
+                  for row in csv.reader(f):
+                      if len(row) < 5:
+                          continue
+                      ip_start, ip_end = row[0], row[1]
+                      cc = row[3].strip().upper()
+                      if ':' in ip_start or cc == 'ZZ' or not re.fullmatch(r'[A-Z]{2}', cc):
+                          continue                 # skip IPv6, unknown and malformed rows
+                      try:
+                          s = int(ipaddress.IPv4Address(ip_start))
+                          e = int(ipaddress.IPv4Address(ip_end))
+                      except ValueError:
+                          continue
+                      if e < s:
+                          continue
+                      rows += 1
+
+                      lst = ranges[cc]
+                      # DB-IP is sorted, so adjacent rows of one country collapse on the fly (low memory)
+                      if lst and lst[-1][0] <= s <= lst[-1][1] + 1:
+                          if e > lst[-1][1]:
+                              lst[-1][1] = e
+                      else:
+                          lst.append([s, e])
+
+                      if cc == 'VN':
+                          city = normalize_city_name(row[4])
+                          for net in ipaddress.summarize_address_range(
+                                  ipaddress.IPv4Address(s), ipaddress.IPv4Address(e)):
+                              vn_cities[city].append(str(net))
+
+              print(f"IPv4 rows read: {rows}")
+              print(f"Countries found: {len(ranges)}")
+
+              if len(ranges) < MIN_COUNTRIES or 'VN' not in ranges:
+                  print("Sanity check failed (too few countries / VN missing). Nothing written.")
+                  sys.exit(1)
+
+              # --- one file per country: country/<cc>.txt (aggregated IPv4 CIDRs) ---
+              os.makedirs(OUT_DIR, exist_ok=True)
+              counts = {}
+              for cc, lst in sorted(ranges.items()):
+                  cidrs = to_cidrs(merge_ranges(lst))
+                  counts[cc] = len(cidrs)
+                  with open(f"{OUT_DIR}/{cc.lower()}.txt", 'w') as f:
+                      f.write('\n'.join(cidrs) + '\n')
+              print(f"Wrote {len(counts)} files to {OUT_DIR}/")
+
+              # --- backward compatible: vietnam.txt + per-city files ---
+              with open('vietnam.txt', 'w') as f:
+                  f.write('\n'.join(to_cidrs(merge_ranges(ranges['VN']))) + '\n')
+              for city, nets in sorted(vn_cities.items()):
+                  with open(f"{city}.txt", 'w') as f:
+                      f.write('\n'.join(sorted(set(nets))) + '\n')
+              print(f"Wrote vietnam.txt and {len(vn_cities)} VN city files")
+
+              print("\n=== Top 10 countries by CIDR count ===")
+              for cc, n in sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]:
+                  print(f"{cc}: {n}")
+
+
+          def main():
+              print("Looking for the latest DB-IP release...")
+              url = find_latest_url()
+              if not url:
+                  print("No valid download link found!")
+                  sys.exit(1)
+              print(f"Downloading: {url}")
+              download(url, 'dbip.csv.gz')
+              print("Processing...")
+              process('dbip.csv.gz')
+              os.remove('dbip.csv.gz')
+              print("Done!")
+
+
+          if __name__ == "__main__":
+              main()
           EOF
-          
+
       - name: Commit and push changes
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add *.txt
-          git commit -m "Update Vietnam IP lists [$(date +'%Y-%m-%d')]" || exit 0
+          git add -A -- '*.txt'
+          git commit -m "Update IP lists [$(date +'%Y-%m-%d')]" || exit 0
           git push
